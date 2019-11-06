@@ -1,0 +1,11 @@
+[package]
+name = "ez-lang"
+version = "0.1.0"
+authors = ["Kevin <quebin31@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lazy_static = "1.4.0"
+common_macros = "0.1.1"
