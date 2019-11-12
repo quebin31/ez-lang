@@ -9,7 +9,7 @@ pub enum Token {
     ReservedWord(String),
     Float(String),
     Integer(String),
-    String(String),
+    LitString(String),
     Dot,
     Coma,
     Colon,
@@ -63,6 +63,16 @@ pub enum Token {
     Newline,
     BlockComment(String),
     InlineComment(String),
+    EndOfFile,
+}
+
+impl Token {
+    pub fn is_whitespace(&self) -> bool {
+        match self {
+            Token::Tab | Token::Space | Token::Newline => true,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for Token {
@@ -72,7 +82,7 @@ impl fmt::Display for Token {
             Token::ReservedWord(word) => word.to_string(),
             Token::Float(_) => "{float}".to_owned(),
             Token::Integer(_) => "{integer}".to_owned(),
-            Token::String(_) => "{string}".to_owned(),
+            Token::LitString(_) => "{string}".to_owned(),
             Token::Dot => ".".to_owned(),
             Token::Coma => ",".to_owned(),
             Token::Colon => ":".to_owned(),
@@ -121,9 +131,12 @@ impl fmt::Display for Token {
             Token::TripleDots => "...".to_owned(),
             Token::SingleArrow => "->".to_owned(),
             Token::DoubleArrow => "=>".to_owned(),
+            Token::Tab => "\\t".to_owned(),
+            Token::Space => " ".to_owned(),
             Token::Newline => "\\n".to_owned(),
             Token::BlockComment(_) => "{block_comment}".to_owned(),
             Token::InlineComment(_) => "{inline_comment}".to_owned(),
+            Token::EndOfFile => "EOF".to_owned(),
         };
 
         write!(f, "{}", out)

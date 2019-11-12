@@ -2,10 +2,10 @@ use crate::token::{self, Token};
 use std::error::Error;
 use std::fmt::Debug;
 use std::io::Read;
-use std::iter::Iterator;
+use std::iter::{Filter, Iterator};
 
 #[derive(Debug, Clone)]
-pub struct TokenReader<R>
+pub struct Lexer<R>
 where
     R: Read + Debug + Clone,
 {
@@ -15,7 +15,9 @@ where
     cursor: usize,
 }
 
-impl<R> TokenReader<R>
+pub type FilteredLexer<R> = Filter<Lexer<R>, Box<dyn FnMut(&Token) -> bool>>;
+
+impl<R> Lexer<R>
 where
     R: Read + Debug + Clone,
 {
@@ -23,26 +25,25 @@ where
     const AUX_SIZE: usize = 4096;
 
     pub fn new(inner: R) -> Self {
-        Self {
+        Lexer {
             inner,
             buf: Vec::new(),
             aux: Vec::new(),
             cursor: 0,
         }
     }
+
+    pub fn without_whitespaces(inner: R) -> FilteredLexer<R> {
+        Self::new(inner).filter(Box::new(|t: &Token| !t.is_whitespace()))
+    }
 }
 
-impl<R> TokenReader<R>
+impl<R> Lexer<R>
 where
     R: Read + Debug + Clone,
 {
     fn fill_buf(&mut self) -> Result<usize, Box<dyn Error>> {
-        let mut bytes = if !self.aux.is_empty() {
-            vec![0; Self::BUF_SIZE]
-        } else {
-            vec![0; Self::AUX_SIZE]
-        };
-
+        let mut bytes = vec![0; Self::BUF_SIZE - self.aux.len()];
         let bytes_read = self.inner.read(&mut bytes)?;
         if bytes_read == 0 {
             return Ok(bytes_read);
@@ -107,14 +108,8 @@ where
     fn match_number(&mut self) -> Option<Token> {
         let mut number = "".to_owned();
 
-        let first = self.peek_curr().unwrap();
-        if first == '-' {
-            number.push(first);
-            self.consume_curr();
-        }
-
         let mut is_float = false;
-        'main: while let Some(chr) = self.peek_curr() {
+        'integer: while let Some(chr) = self.peek_curr() {
             match chr {
                 digit if digit.is_ascii_digit() => {
                     number.push(digit);
@@ -132,12 +127,12 @@ where
                             number.push(chr);
                             self.consume_curr();
                         } else {
-                            break 'main;
+                            break 'integer;
                         }
                     }
                 }
 
-                _ => break 'main,
+                _ => break 'integer,
             }
         }
 
@@ -188,181 +183,153 @@ where
             what => unreachable!("Unreachable with {}", what),
         };
 
-        if let Some(chr) = self.peek_curr() {
-            if chr == '=' {
+        match self.peek_curr() {
+            Some('=') => {
                 self.consume_curr();
                 Some(possible_output.1)
-            } else {
-                Some(possible_output.0)
             }
-        } else {
-            None
+
+            _ => Some(possible_output.0),
         }
     }
 }
 
-impl<R> Iterator for TokenReader<R>
+impl<R> Iterator for Lexer<R>
 where
     R: Read + Debug + Clone,
 {
     type Item = Token;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.peek_curr()?; // Early return
+        match self.peek_curr()? {
+            chr if chr.is_ascii_digit() => self.match_number(),
+            chr if chr.is_ascii_alphabetic() || chr == '_' => self.match_word(),
+            '-' => match self.peek_ahead(1) {
+                Some('>') => {
+                    self.consume_curr();
+                    self.consume_curr();
+                    Some(Token::SingleArrow)
+                }
 
-        while let Some(chr) = self.peek_curr() {
-            if !chr.is_ascii_whitespace() {
-                break;
-            } else {
+                _ => self.match_op("-"),
+            },
+
+            ',' => {
                 self.consume_curr();
+                Some(Token::Coma)
             }
-        }
-
-        if let Some(chr) = self.peek_curr() {
-            match chr {
-                _ if chr.is_ascii_digit() => self.match_number(),
-                _ if chr.is_ascii_alphabetic() || chr == '_' => self.match_word(),
-                '-' => {
-                    if let Some(chr) = self.peek_ahead(1) {
-                        match chr {
-                            _ if chr.is_ascii_digit() => self.match_number(),
-                            '>' => {
-                                self.consume_curr();
-                                self.consume_curr();
-                                Some(Token::SingleArrow)
-                            }
-                            _ => self.match_op("-"),
-                        }
-                    } else {
-                        None
-                    }
-                }
-
-                ',' => {
-                    self.consume_curr();
-                    Some(Token::Coma)
-                }
-                ';' => {
-                    self.consume_curr();
-                    Some(Token::SemiColon)
-                }
-
-                ':' => {
-                    self.consume_curr();
-                    if let Some(chr) = self.peek_curr() {
-                        if chr == ':' {
-                            self.consume_curr();
-                            Some(Token::ColonPath)
-                        } else {
-                            Some(Token::Colon)
-                        }
-                    } else {
-                        Some(Token::Colon)
-                    }
-                }
-
-                '.' => {
-                    self.consume_curr();
-                    match (self.peek_curr(), self.peek_ahead(1)) {
-                        (Some('.'), Some('.')) => {
-                            self.consume_curr();
-                            self.consume_curr();
-                            Some(Token::TripleDots)
-                        }
-
-                        (Some('.'), _) => {
-                            self.consume_curr();
-                            Some(Token::DoubleDots)
-                        }
-
-                        (_, _) => Some(Token::Dot),
-                    }
-                }
-
-                '*' => self.match_op("*"),
-                '+' => self.match_op("+"),
-                '/' => self.match_op("/"),
-                '~' => self.match_op("~"),
-                '!' => self.match_op("!"),
-                '=' => {
-                    if let Some(chr) = self.peek_ahead(1) {
-                        if chr == '>' {
-                            self.consume_curr();
-                            self.consume_curr();
-                            Some(Token::DoubleArrow)
-                        } else {
-                            self.match_op("=")
-                        }
-                    } else {
-                        self.consume_curr();
-                        Some(Token::Assign)
-                    }
-                }
-                '<' => self.match_op("<"),
-                '>' => self.match_op(">"),
-                '%' => self.match_op("%"),
-
-                '&' => {
-                    if let Some(chr) = self.peek_ahead(1) {
-                        if chr == '&' {
-                            self.consume_curr();
-                            self.match_op("&&")
-                        } else {
-                            self.match_op("&")
-                        }
-                    } else {
-                        self.consume_curr();
-                        Some(Token::Ampersand)
-                    }
-                }
-
-                '|' => {
-                    if let Some(chr) = self.peek_ahead(1) {
-                        if chr == '|' {
-                            self.consume_curr();
-                            self.match_op("||")
-                        } else {
-                            self.match_op("|")
-                        }
-                    } else {
-                        self.consume_curr();
-                        Some(Token::VerticalBar)
-                    }
-                }
-
-                '{' => {
-                    self.consume_curr();
-                    Some(Token::LeftBrace)
-                }
-                '}' => {
-                    self.consume_curr();
-                    Some(Token::RightBrace)
-                }
-                '(' => {
-                    self.consume_curr();
-                    Some(Token::LeftParenthesis)
-                }
-                ')' => {
-                    self.consume_curr();
-                    Some(Token::RightParenthesis)
-                }
-                '[' => {
-                    self.consume_curr();
-                    Some(Token::LeftBracket)
-                }
-                ']' => {
-                    self.consume_curr();
-                    Some(Token::RightBracket)
-                }
-                '\n' => {
-                    self.consume_curr();
-                    Some(Token::Ri1)
-                }
-
-                _ => unimplemented!(),
+            ';' => {
+                self.consume_curr();
+                Some(Token::SemiColon)
             }
-        } else {
-            None
+
+            ':' => {
+                self.consume_curr();
+                match self.peek_curr() {
+                    Some(':') => {
+                        self.consume_curr();
+                        Some(Token::ColonPath)
+                    }
+
+                    _ => Some(Token::Colon)
+                }
+            }
+
+            '.' => {
+                self.consume_curr();
+                match (self.peek_curr(), self.peek_ahead(1)) {
+                    (Some('.'), Some('.')) => {
+                        self.consume_curr();
+                        self.consume_curr();
+                        Some(Token::TripleDots)
+                    }
+
+                    (Some('.'), _) => {
+                        self.consume_curr();
+                        Some(Token::DoubleDots)
+                    }
+
+                    (_, _) => Some(Token::Dot),
+                }
+            }
+
+            '*' => self.match_op("*"),
+            '+' => self.match_op("+"),
+            '/' => self.match_op("/"),
+            '~' => self.match_op("~"),
+            '!' => self.match_op("!"),
+            '=' => match self.peek_ahead(1) {
+                Some('>') => {
+                    self.consume_curr();
+                    self.consume_curr();
+                    Some(Token::DoubleArrow)
+                }
+
+                _ => self.match_op("="),
+            },
+            '<' => self.match_op("<"),
+            '>' => self.match_op(">"),
+            '%' => self.match_op("%"),
+
+            '&' => {
+                match self.peek_ahead(1) {
+                    Some('&') => {
+                        self.consume_curr();
+                        self.match_op("&&")
+                    }
+
+                    _ => self.match_op("&")
+                }
+            }
+
+            '|' => {
+                match self.peek_ahead(1) {
+                    Some('|') => {
+                        self.consume_curr();
+                        self.match_op("||")
+                    } 
+                    _ => self.match_op("|")
+                }
+            }
+
+            '{' => {
+                self.consume_curr();
+                Some(Token::LeftBrace)
+            }
+            '}' => {
+                self.consume_curr();
+                Some(Token::RightBrace)
+            }
+            '(' => {
+                self.consume_curr();
+                Some(Token::LeftParenthesis)
+            }
+            ')' => {
+                self.consume_curr();
+                Some(Token::RightParenthesis)
+            }
+            '[' => {
+                self.consume_curr();
+                Some(Token::LeftBracket)
+            }
+            ']' => {
+                self.consume_curr();
+                Some(Token::RightBracket)
+            }
+            '\t' => {
+                self.consume_curr();
+                Some(Token::Tab)
+            }
+            ' ' => {
+                self.consume_curr();
+                Some(Token::Space)
+            }
+            '\n' => {
+                self.consume_curr();
+                Some(Token::Newline)
+            }
+
+            _ => unimplemented!(),
         }
     }
 }
@@ -406,7 +373,7 @@ mod tests {
             >=
         "#;
 
-        let mut token_reader = TokenReader::new(Cursor::new(contents));
+        let mut token_reader = Lexer::without_whitespaces(Cursor::new(contents));
         assert_eq!(token_reader.next(), Some(Token::Plus));
         assert_eq!(token_reader.next(), Some(Token::PlusAssign));
         assert_eq!(token_reader.next(), Some(Token::Minus));
@@ -441,11 +408,13 @@ mod tests {
     #[test]
     fn read_numbers() {
         let contents = "-323.2 22 -10 1222.";
-        let mut token_reader = TokenReader::new(Cursor::new(contents));
+        let mut token_reader = Lexer::without_whitespaces(Cursor::new(contents));
 
-        assert_eq!(token_reader.next(), Some(Token::Float("-323.2".to_owned())));
+        assert_eq!(token_reader.next(), Some(Token::Minus));
+        assert_eq!(token_reader.next(), Some(Token::Float("323.2".to_owned())));
         assert_eq!(token_reader.next(), Some(Token::Integer("22".to_owned())));
-        assert_eq!(token_reader.next(), Some(Token::Integer("-10".to_owned())));
+        assert_eq!(token_reader.next(), Some(Token::Minus));
+        assert_eq!(token_reader.next(), Some(Token::Integer("10".to_owned())));
         assert_eq!(token_reader.next(), Some(Token::Float("1222.".to_owned())));
         assert_eq!(token_reader.next(), None);
     }
@@ -453,7 +422,7 @@ mod tests {
     #[test]
     fn read_words() {
         let contents = "contents let main _ var1 var2 var_33";
-        let mut token_reader = TokenReader::new(Cursor::new(contents));
+        let mut token_reader = Lexer::without_whitespaces(Cursor::new(contents));
 
         assert_eq!(
             token_reader.next(),
@@ -489,7 +458,7 @@ mod tests {
     #[test]
     fn read_combination() {
         let contents = "let mut token_reader = TokenReader::new(Cursor::new(contents));";
-        let mut token_reader = TokenReader::new(Cursor::new(contents));
+        let mut token_reader = Lexer::without_whitespaces(Cursor::new(contents));
 
         assert_eq!(
             token_reader.next(),
@@ -538,5 +507,20 @@ mod tests {
         assert_eq!(token_reader.next(), Some(Token::RightParenthesis));
         assert_eq!(token_reader.next(), Some(Token::SemiColon));
         assert_eq!(token_reader.next(), None);
+    }
+
+    #[test]
+    fn read_combination2() {
+        let expr = "true && (true || false)";
+        let mut lexer = Lexer::without_whitespaces(Cursor::new(expr));
+
+        assert_eq!(lexer.next(), Some(Token::ReservedWord("true".to_owned())));
+        assert_eq!(lexer.next(), Some(Token::DoubleAmpersand));
+        assert_eq!(lexer.next(), Some(Token::LeftParenthesis));
+        assert_eq!(lexer.next(), Some(Token::ReservedWord("true".to_owned())));
+        assert_eq!(lexer.next(), Some(Token::DoubleVerticalBar));
+        assert_eq!(lexer.next(), Some(Token::ReservedWord("false".to_owned())));
+        assert_eq!(lexer.next(), Some(Token::RightParenthesis));
+        assert_eq!(lexer.next(), None);
     }
 }
